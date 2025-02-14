@@ -1,0 +1,156 @@
+---
+title: "RNAseq Differential Gene Expression Analysis"
+output: html_notebook
+editor_options: 
+  chunk_output_type: inline
+---
+
+# Intro
+This notebook demonstrates a differential gene expression analysis (DEA) pipeline using RNA-seq data in R. The dataset used in this analysis investigates pancreatic ductal adenocarcinoma (PDAC) mouse models and the role of the HUR protein in tumor immunity.
+
+HUR is an RNA-binding protein implicated in post-transcriptional gene regulation. It has been linked to tumor progression, immune modulation, and inflammation. To examine its role in PDAC, we analyze transcriptomic profiles comparing HUR knockout (KO) PDAC cells (experimental group) and wild-type (WT) PDAC cells (control group) based on publicly available data.
+
+### Load Necessary Libraries
+
+Before beginning our analysis, we load the required R libraries to facilitate data handling, visualization, and differential expression analysis.
+
+```{r,results='hide',fig.keep='all'}
+# necessary libraries
+library(dplyr)     # Data manipulation
+library(tidyverse) # Comprehensive data science toolkit
+library(readr)     # Reading data files
+library(GEOquery)  # Accessing NCBI GEO datasets
+library(DESeq2)    # Differential expression analysis
+```
+
+### Londing the Gene Expression Data 
+
+We begin by loading RNA-seq count data from the research study. This dataset contains raw read counts for each gene across all samples.
+
+```{r,results='hide',fig.keep='all'}
+# read the data
+data <- read.csv(file = 'GSE287307_raw_counts_all_samples.txt', sep = "\t")
+
+# get metadata
+gse <- getGEO(GEO='GSE287307',GSEMatrix = TRUE)
+metadata <- pData(phenoData(gse[[1]]))
+
+metadata_subset <- select(metadata,c(1,43)) # contains sample and genotype, which we can work with
+
+```
+
+### Data preprocessing
+
+We will then perform a series of data manipulation necessary for performing differential gene expression with DESeq2.
+
+```{r,results='hide',fig.keep='all'}
+col_data <- metadata_subset
+colnames(col_data)[2] <- "genotype"
+
+# extract read counts from data
+count_data <- select(data,c(1:7))
+
+# format counts for differential expression
+rownames(count_data) <- count_data[,1]
+count_data <- count_data[,-1]
+
+# change row names for col_data to match our columns of counts
+rownames(col_data) <- colnames(count_data)
+
+# make sure that rows of col_data and columns of counts match
+all(rownames(col_data) == colnames(count_data))
+
+# make DEseq2 object
+dds <- DESeqDataSetFromMatrix(countData = count_data,
+                              colData= col_data,
+                              design = ~ genotype)
+
+### filtering and final step ###
+filtered_dds <- dds[rowSums(counts(dds)) > 10, ]
+
+# set factor level
+filtered_dds$genotype <- relevel(filtered_dds$genotype, ref='WT')
+```
+
+### Differential Gene Expression Analysis and Visualization
+
+Once our DESeq2 object has been created and preprocessed, we will perform differential gene expression analysis along with visualzing the significant differentially expressed genes. DESeq2 is a powerful tool for analyzing RNA-seq data, using statistical models to determine significantly differentially expressed genes (DEGs).
+
+```{r,results='hide',fig.keep='all'}
+# run DESeq (differential gene expression)
+dds_out <- DESeq(filtered_dds)
+
+# extract results and order them to identify differentially expressed genes
+res <- results(dds_out)
+res <- res[order(res$padj),]
+
+### Data Visualization ####
+# necessary libraries for visualization
+library(genefilter)
+library(pheatmap)
+library(org.Mm.eg.db)
+
+# transform count data for visualization
+rld <- rlogTransformation(dds_out, blind=F)
+
+# extract top genes for visualization
+top_genes <- head(order(rowVars(assay(rld)), decreasing = TRUE), 20)
+mat <- assay(rld)[top_genes, ]
+
+# Create a mapping of Ensembl IDs to Gene Names
+id_to_names <- setNames(data$gene_name, data$gene_id)
+
+# convert rows to gene names to make heatmap readable
+rownames(mat) <- id_to_names[rownames(mat)]
+
+# use heatmap to visualize gene expression
+pheatmap(mat, scale = 'row')
+```
+
+
+### Gene Ontology Analysis
+
+Now, we will conduct gene ontology analysis to observe any pattern in the differentially expressed genes for both upregulated and downregulated groups for the knockout samples. But first, we need to extract our results to order and filter them accordingly.
+
+```{r,results='hide',fig.keep='all'}
+# extract results and order them to identify differentially expressed genes
+res <- results(dds_out)
+res <- res[order(res$padj),]
+
+# extract differentially expressed genes that are upregulated in knockouts
+up <- subset(res,res$padj < 0.05 & res$log2FoldChange > 0)
+# extract differentially expressed genes that are downregulated in knockouts
+down <- subset(res,res$padj < 0.05 & res$log2FoldChange < 0)
+
+# write all the gene ids to a file which can be used as input for DAVID
+write(data$gene_id, "background.txt") # list of all genes prior to any filtering
+write(rownames(down),"down.txt")
+write(rownames(up),"up.txt")
+```
+
+Now that we have written our foreground and background as valid inputs for DAVID, we can input these files into this web tool and gain insights into the pattern of enriched pathways from upregulated and downregulated genes. Alternatively we can also utilize the library `clusterProfiler` which contains functions that can perform gene ontology analysis in this environment. After obtaining the enrichment analysis, from `clusterProfiler`, we can visualize the results by plotting the enrichment analysis results. 
+
+### Visualizing GO Results
+
+```{r,results='hide',fig.keep='all'}
+# -----------------------------
+# Functional Annotation and Enrichment Analysis
+# -----------------------------
+# Load necessary libraries for enrichment analysis
+library(clusterProfiler)
+library(DOSE)
+
+up_enriched <- enrichGO(rownames(up), OrgDb = org.Mm.eg.db, ont = 'ALL', pAdjustMethod = 'BH', pvalueCutoff = 0.05,
+                        qvalueCutoff = 0.2, keyType = 'ENSEMBL')
+
+down_enriched <- enrichGO(rownames(down), OrgDb = org.Mm.eg.db, ont = 'ALL', pAdjustMethod = 'BH', pvalueCutoff = 0.05,
+                        qvalueCutoff = 0.2, keyType = 'ENSEMBL')
+
+# view enriched pathways from upregulated and downregulated genes from knockouts
+barplot(down_enriched, showCategory=8, drop=T)
+barplot(up_enriched, showCategory=8, drop=T)
+```
+From looking at the enrichment results, we can see that genes that are downregulated in knockout samples are highly involved in RNA processing, DNA replication, and chromosome organization. Several pathways related to RNA metabolism, including ribonucleoprotein complex biogenesis and RNA splicing, are significantly downregulated. This suggests that HUR may help regulate RNA processing and maturation, potentially by stabilizing mRNAs involved in these functions. Pathways related to DNA replication and DNA-templated DNA replication are also downregulated, suggesting that HUR may play a role in maintaining proper DNA synthesis and cell cycle progression.
+
+Overall, HuR depletion leads to widespread downregulation of RNA metabolism, DNA replication, and chromosome organization, impairing tumor growth. The loss of HuR enhances T cell infiltration and activation, likely due to reduced mTOR pathway signaling and an overall weakened immunosuppressive tumor microenvironment. These results support the hypothesis that HuR functions as a key regulator of immune evasion in PDAC and suggest that targeting HuR could enhance the efficacy of immunotherapies.
+

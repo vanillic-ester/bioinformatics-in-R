@@ -1,3 +1,8 @@
+---
+layout: default
+title: Preprocessing
+---
+
 # **RNA-seq Data Processing Pipeline**
 
 *Disclaimer:* I used the counts data directly from the published source. However, these would be the procedures I would perform to process the RNA-seq data and obtain the quantified expression for each conditions of this study.
